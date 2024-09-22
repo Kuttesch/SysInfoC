@@ -1,9 +1,26 @@
 #include<stdio.h>
 #include<string.h>
+#include<windows.h>
+
+#define DIV 1024
 
 int a[10];
-char* getCpuID()
-{
+
+char* getCpuInfo();
+int getMemInfoWindows();
+
+int main(){
+    float memInfo[3];
+    char *cpuStr = getCpuInfo();
+    getMemInfoWindows(memInfo);
+
+    printf("%s\n", cpuStr);
+    printf("MEMPerct:   %f %%\n",memInfo[0]);
+    printf("MEMTotal:   %f GB\n",memInfo[1]);
+    printf("MEMAvail:   %f MB\n",memInfo[2]);
+}
+
+char* getCpuInfo(){
     __asm__(
         "xor %eax , %eax\n\t"
         "xor %ebx , %ebx\n\t"
@@ -11,7 +28,7 @@ char* getCpuID()
         "xor %edx , %edx\n\t"
     );
 
-    static char cpu_str[256] = "";
+    static char cpuStr[256] = "";
 
     for (int i=1; i<=3; i++){
         if (i == 1) {
@@ -28,15 +45,20 @@ char* getCpuID()
         __asm__("mov %%ebx, %0" : "=r" (a[1]));
         __asm__("mov %%ecx, %0" : "=r" (a[2]));
         __asm__("mov %%edx, %0" : "=r" (a[3]));
-        strcat(cpu_str, (char*)&a[0]);
+        strcat(cpuStr, (char*)&a[0]);
     }
-    
-    return cpu_str;
+    return cpuStr;    
 }
 
-int main(){
-    char *cpuStrPtr = getCpuID();
+int getMemInfoWindows(float result[3]){
+    
+    MEMORYSTATUSEX memstat;
+    memstat.dwLength = sizeof(memstat);
+    GlobalMemoryStatusEx (&memstat);
 
+    result[0] = (float)memstat.dwMemoryLoad;
+    result[1] = (float)memstat.ullTotalPhys / (DIV * DIV * DIV);
+    result[2] = (float)memstat.ullAvailPhys / (DIV * DIV);
 
-    printf("%s", cpuStrPtr);
+    return 0;
 }

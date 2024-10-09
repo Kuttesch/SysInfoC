@@ -3,6 +3,11 @@
 #include <windows.h>
 #include "systemArt.h"
 
+#ifdef __APPLE__
+    #include <sys/sysctl.h>
+    #include <mach/mach.h>
+#endif
+
 #define CHART_LENGTH 50
 #define DIV 1024.0
 #define GB_DIV (DIV * DIV)
@@ -10,19 +15,19 @@
 #define COLOR 34
 
 char* getCpuInfo();
-int getMemInfoWindows(float result[2]);
-int getDiskInfoWindows(char result[26][256], char drives[26]);
-int getUpTimeWindows(int upTime[4]);
-int getOsInfo(char osName[256]);
+int getMemInfo(float result[2]);
+int getDiskInfo(char result[26][256], char drives[26]);
+int getUpTime(int upTime[4]);
+int getOsInfo(OSVERSIONINFOEX *osInfo, char osName[256]);
 int matchWindowsVersion(OSVERSIONINFOEX osInfo, char osName[256]);
 int infoToChart(float info[2], char outputChar[256]);
 void print(const char *osArt, const char *systemInfo);
 
 
 int main() {
-    char systemInfo[1024] = {0}; // Increased buffer size to accommodate all info
-    char systemArt[256];
-    getSystemArt(systemArt); // Corrected function call
+    OSVERSIONINFOEX osInfo;
+    char systemInfo[1024] = {0};
+    char systemArt[1024] = {0};
     float memInfo[2];
     int upTime[4];
     char osName[256];
@@ -31,11 +36,13 @@ int main() {
     char diskResult[26][256] = {0};
     char *cpuStr = getCpuInfo();
 
-    getUpTimeWindows(upTime);
-    getMemInfoWindows(memInfo);
+    getUpTime(upTime);
+    getMemInfo(memInfo);
     infoToChart(memInfo, chartMem);
-    getOsInfo(osName);
-    getDiskInfoWindows(diskResult,drives);
+    getOsInfo(&osInfo, osName);
+    matchWindowsVersion(osInfo, osName);
+    getDiskInfo(diskResult,drives);
+    getSystemArt(osInfo, systemArt);
 
     snprintf(systemInfo + strlen(systemInfo), 256, "OS:         %s\n", osName);
     snprintf(systemInfo + strlen(systemInfo), 256, "CPU:        %s\n", cpuStr);
@@ -46,44 +53,82 @@ int main() {
         snprintf(systemInfo + strlen(systemInfo), 256, "Disk %c:     %s\n", drives[i], diskResult[i]);
     }
 
-    print(systemArt, systemInfo); // Corrected function call
+    print(systemArt, systemInfo);
     return 0;
 }
 
 int a[10];
 char* getCpuInfo() {
     static char cpuStr[256] = "";
+    size_t size = sizeof(cpuStr);
+    #ifdef _WIN32
 
-    for (int i = 1; i <= 3; i++) {
-        if (i == 1) {
-            __asm__("mov $0x80000002, %eax");
-        } else if (i == 2) {
-            __asm__("mov $0x80000003, %eax");
-        } else if (i == 3) {
-            __asm__("mov $0x80000004, %eax");
+        for (int i = 1; i <= 3; i++) {
+            if (i == 1) {
+                __asm__("mov $0x80000002, %eax");
+            } else if (i == 2) {
+                __asm__("mov $0x80000003, %eax");
+            } else if (i == 3) {
+                __asm__("mov $0x80000004, %eax");
+            }
+            __asm__("cpuid");
+            __asm__("mov %%eax, %0" : "=r" (a[0]));
+            __asm__("mov %%ebx, %0" : "=r" (a[1]));
+            __asm__("mov %%ecx, %0" : "=r" (a[2]));
+            __asm__("mov %%edx, %0" : "=r" (a[3]));
+            strcat(cpuStr, (char*)&a[0]);
         }
-        __asm__("cpuid");
-        __asm__("mov %%eax, %0" : "=r" (a[0]));
-        __asm__("mov %%ebx, %0" : "=r" (a[1]));
-        __asm__("mov %%ecx, %0" : "=r" (a[2]));
-        __asm__("mov %%edx, %0" : "=r" (a[3]));
-        strcat(cpuStr, (char*)&a[0]);
-    }
-    return cpuStr;
+    #elif __APPLE__
+        #ifdef TARGET_OS_MAC
+            char brandStr[size];
+            if (sysctlbyname("machdep.cpu.brand_string", &brandStr, &size, NULL, 0) == 0) {
+                strcat(cpuStr, brandStr);
+            }
+        #endif
+    #endif
+    return cpuStr;    
 }
 
-int getMemInfoWindows(float result[2]) {
-    MEMORYSTATUSEX memstat;
-    memstat.dwLength = sizeof(memstat);
-    GlobalMemoryStatusEx(&memstat);
+int getMemInfo(float result[2]) {
+    #ifdef _WIN32
+        MEMORYSTATUSEX memstat;
+        memstat.dwLength = sizeof(memstat);
+        GlobalMemoryStatusEx(&memstat);
 
-    result[0] = (float)(memstat.ullTotalPhys - memstat.ullAvailPhys) / DIV;
-    result[1] = (float)memstat.ullTotalPhys / DIV;
+        result[0] = (float)(memstat.ullTotalPhys - memstat.ullAvailPhys) / DIV;
+        result[1] = (float)memstat.ullTotalPhys / DIV;
+    #elif __linux__
 
+
+    #elif __APPLE__
+        #ifdef TARGET_OS_MAC
+            int64_t totalMem;
+            size_t size = sizeof(totalMem);
+            mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+            vm_statistics64_data_t vm_info;
+            kern_return_t kr = host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm_info, &count);
+
+            if (sysctlbyname("hw.memsize", &totalMem, &size, NULL, 0) == 0) {
+                result[0] = (float)totalMem / DIV;
+            } else {
+                return 1;
+            }
+            if (kr == KERN_SUCCESS) {
+                int64_t free_memory = vm_info.free_count * sysconf(_SC_PAGESIZE);
+                int64_t active_memory = vm_info.active_count * sysconf(_SC_PAGESIZE);
+                int64_t inactive_memory = vm_info.inactive_count * sysconf(_SC_PAGESIZE);
+                int64_t wired_memory = vm_info.wire_count * sysconf(_SC_PAGESIZE);
+                
+                result[1] = (float)(active_memory + inactive_memory + wired_memory) / DIV;
+            } else {
+                return 1;
+            }
+        #endif
+    #endif
     return 0;
 }
 
-int getDiskInfoWindows(char result[26][256], char drives[26]) {
+int getDiskInfo(char result[26][256], char drives[26]) {
     ULARGE_INTEGER freeBytesAvailable, totalBytes, totalFreeBytes;
     char driveStrings[256];
     DWORD driveResult = GetLogicalDriveStringsA(sizeof(driveStrings), driveStrings);
@@ -108,6 +153,56 @@ int getDiskInfoWindows(char result[26][256], char drives[26]) {
 
     return 0;
 }
+
+int getUpTime(int upTime[4]) {
+    ULONGLONG tickCount = GetTickCount64();
+    int sec = (int)(tickCount / 1000);
+
+    upTime[0] = sec / 86400;
+    sec %= 86400;
+    upTime[1] = sec / 3600;
+    sec %= 3600;
+    upTime[2] = sec / 60;
+    upTime[3] = sec % 60;
+
+    return 0;
+}
+
+int getOsInfo(OSVERSIONINFOEX *osInfo, char osName[256]) {
+    ZeroMemory(osInfo, sizeof(OSVERSIONINFOEX));
+    osInfo->dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
+    GetVersionEx((LPOSVERSIONINFO)osInfo);
+    matchWindowsVersion(*osInfo, osName);
+    return 0;
+}
+
+int matchWindowsVersion(OSVERSIONINFOEX osInfo, char osName[256]) {
+    DWORD osType;
+    GetProductInfo(osInfo.dwMajorVersion, osInfo.dwMinorVersion, osInfo.wServicePackMajor, osInfo.wServicePackMinor, &osType);
+
+    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber >= 22000) {
+        strcpy(osName, "Windows 11");
+    } else if (osInfo.dwMajorVersion == 10) {
+        strcpy(osName, "Windows 10");
+    } else {
+        strcpy(osName, "Older Windows");
+        return 1;
+    }
+
+    switch (osType) {
+        case PRODUCT_HOME_BASIC: strcat(osName, " Home Basic"); break;
+        case PRODUCT_HOME_PREMIUM: strcat(osName, " Home Premium"); break;
+        case PRODUCT_PROFESSIONAL: strcat(osName, " Professional"); break;
+        case PRODUCT_ULTIMATE: strcat(osName, " Ultimate"); break;
+        case PRODUCT_ENTERPRISE: strcat(osName, " Enterprise"); break;
+        case PRODUCT_EDUCATION: strcat(osName, " Education"); break;
+        case PRODUCT_CORE: strcat(osName, " Home"); break;
+        case PRODUCT_PRO_WORKSTATION: strcat(osName, " Pro for Workstations"); break;
+        default: strcat(osName, ""); break;
+    }
+    return 0;
+}
+
 
 int infoToChart(float info[2], char outputChar[256]) {
 
@@ -156,56 +251,6 @@ int infoToChart(float info[2], char outputChar[256]) {
 
     snprintf(outputChar, 256, "[%s%s%s] %d%%", frontBuffer, midBuffer, backBuffer, occupPerc);
 
-    return 0;
-}
-
-int getUpTimeWindows(int upTime[4]) {
-    ULONGLONG tickCount = GetTickCount64();
-    int sec = (int)(tickCount / 1000);
-
-    upTime[0] = sec / 86400;
-    sec %= 86400;
-    upTime[1] = sec / 3600;
-    sec %= 3600;
-    upTime[2] = sec / 60;
-    upTime[3] = sec % 60;
-
-    return 0;
-}
-
-int getOsInfo(char osName[256]) {
-    OSVERSIONINFOEX osInfo;
-    ZeroMemory(&osInfo, sizeof(OSVERSIONINFOEX));
-    osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
-    GetVersionEx((LPOSVERSIONINFO)&osInfo);
-    matchWindowsVersion(osInfo, osName);
-    return 0;
-}
-
-int matchWindowsVersion(OSVERSIONINFOEX osInfo, char osName[256]) {
-    DWORD osType;
-    GetProductInfo(osInfo.dwMajorVersion, osInfo.dwMinorVersion, osInfo.wServicePackMajor, osInfo.wServicePackMinor, &osType);
-
-    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber >= 22000) {
-        strcpy(osName, "Windows 11");
-    } else if (osInfo.dwMajorVersion == 10) {
-        strcpy(osName, "Windows 10");
-    } else {
-        strcpy(osName, "Older Windows");
-        return 1;
-    }
-
-    switch (osType) {
-        case PRODUCT_HOME_BASIC: strcat(osName, " Home Basic"); break;
-        case PRODUCT_HOME_PREMIUM: strcat(osName, " Home Premium"); break;
-        case PRODUCT_PROFESSIONAL: strcat(osName, " Professional"); break;
-        case PRODUCT_ULTIMATE: strcat(osName, " Ultimate"); break;
-        case PRODUCT_ENTERPRISE: strcat(osName, " Enterprise"); break;
-        case PRODUCT_EDUCATION: strcat(osName, " Education"); break;
-        case PRODUCT_CORE: strcat(osName, " Home"); break;
-        case PRODUCT_PRO_WORKSTATION: strcat(osName, " Pro for Workstations"); break;
-        default: strcat(osName, ""); break;
-    }
     return 0;
 }
 

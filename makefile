@@ -1,4 +1,4 @@
-# Makefile for compiling memory_info.c with OS-specific flags
+# Makefile for compiling SysInfo.c with OS-specific flags
 
 # Compiler
 CC = gcc
@@ -7,17 +7,20 @@ CC = gcc
 TARGET = SysInfoC
 
 # Source files
-SRC = SysInfo.c
+SRC = SysInfoC.c
 
 # Default target
 all: $(TARGET)
 
 # Detect the OS and set flags
-ifeq ($(shell uname), Darwin)
+ifeq ($(OS), Windows_NT)
+    # Windows-specific settings
+    CFLAGS = 
+else ifeq ($(shell uname), Darwin)
     # macOS-specific settings
     CFLAGS = -framework CoreFoundation -framework IOKit
 else
-    # Settings for other OS (adjust as needed)
+    # Default settings for other systems
     CFLAGS = 
 endif
 
